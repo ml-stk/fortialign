@@ -1,0 +1,6 @@
+{
+  "name": "FortiGate Migration Audit Checklist Generator",
+  "description": "Interactive model-agnostic FortiGate appliance migration checklist generator with HA, VDOM, and firmware audit validation steps.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
