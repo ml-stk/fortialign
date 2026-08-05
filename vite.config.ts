@@ -3,5 +3,5 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
-  base: '/fortigate-audit-checklist/',
+  base: './fortigate-audit-checklist/',
 })
