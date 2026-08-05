@@ -3,12 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Added inline SVG favicon to resolve 404s -->
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>" />
     <title>STK FortiGate Config Migration Checklist App</title>
-    <script type="module" crossorigin src="/fortigate-audit-checklist/assets/index-BRPTNXEf.js"></script>
-    <link rel="stylesheet" crossorigin href="/fortigate-audit-checklist/assets/index-B5nl1V8t.css">
+    <!-- Changed to relative paths (./) so assets load regardless of the domain/folder structure -->
+    <script type="module" crossorigin src="./assets/index-BRPTNXEf.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-B5nl1V8t.css">
   </head>
   <body>
     <div id="root"></div>
   </body>
 </html>
-
