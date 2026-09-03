@@ -1,9 +1,9 @@
 {
-  "name": "react-example",
+  "name": "fortialign",
   "private": true,
-  "version": "0.0.0",
+  "version": "2.0.0",
   "type": "module",
-  "homepage": "https://mlaveil.github.io/fortigate-audit-checklist",
+  "homepage": "https://ml-stk.github.io/fortialign",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
     "build": "vite build",
@@ -33,7 +33,6 @@
     "gh-pages": "^6.3.0",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
-    "typescript": "~5.8.2",
-    "vite": "^6.2.3"
+    "typescript": "~5.8.2"
   }
 }
