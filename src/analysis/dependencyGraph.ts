@@ -21,11 +21,11 @@ const categoryKind = (category: string): DependencyKind => {
   return 'unknown';
 };
 
-const normalise = (value: string) => value.replace(/^['"]|['"]$/g, '').trim().toLowerCase();
+const normalise = (value: string) => value.trim().toLowerCase();
 const cleanName = (value: string) => value.replace(/^['"]|['"]$/g, '').trim();
 const excluded = new Set(['vdoms', 'model', 'firmware', 'hostname']);
 const literal = /^(all|any|none|enable|disable|always|never)$/i;
-const ipOrCidr = /^(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?(?::\d+)?$/;
+const ipOrCidr = /^(?:(?:\d{1,3}\.){3}\d{1,3})(?:\/\d{1,2})?(?::\d+)?$/;
 
 function allItems(inventory: ConfigurationInventory): Array<{ category: string; item: InventoryItem }> {
   return Object.entries(inventory)
@@ -33,10 +33,35 @@ function allItems(inventory: ConfigurationInventory): Array<{ category: string; 
     .flatMap(([category, value]) => (value as InventoryItem[]).map(item => ({ category, item })));
 }
 
+/** Tokenise FortiOS command values while preserving quoted object names such as "NBC Servers". */
+function tokenise(value: string): string[] {
+  const tokens: string[] = [];
+  let current = '';
+  let quote = '';
+  let escaped = false;
+  for (const char of value.trim()) {
+    if (escaped) { current += char; escaped = false; continue; }
+    if (char === '\\' && quote) { escaped = true; continue; }
+    if (quote) {
+      if (char === quote) quote = '';
+      else current += char;
+      continue;
+    }
+    if (char === '"' || char === "'") { quote = char; continue; }
+    if (/\s/.test(char)) {
+      if (current) { tokens.push(current); current = ''; }
+      continue;
+    }
+    current += char;
+  }
+  if (current) tokens.push(current);
+  return tokens;
+}
+
 function values(command: string): string[] {
   const match = command.match(/^(?:set|append|unselect)\s+\S+\s+(.+)$/i);
   if (!match) return [];
-  return match[1].split(/\s+/).map(cleanName).filter(value => !literal.test(value) && !ipOrCidr.test(value));
+  return tokenise(match[1]).map(cleanName).filter(value => !literal.test(value) && !ipOrCidr.test(value));
 }
 
 const referenceTargets: Record<string, Record<string, DependencyKind>> = {
@@ -51,7 +76,21 @@ const referenceTargets: Record<string, Record<string, DependencyKind>> = {
   ipsecPhase2: { phase1name: 'vpn' },
   userGroups: { member: 'authentication' },
   authenticationServers: { certificate: 'certificate' },
-  interfaces: { 'dhcp-relay-ip': 'interface' },
+};
+
+const targetCategories: Record<DependencyKind, Set<string>> = {
+  interface: new Set(['interfaces']),
+  address: new Set(['addressObjects', 'addressGroups']),
+  service: new Set(['services', 'serviceGroups']),
+  'security-profile': new Set(['securityProfiles']),
+  vip: new Set(['virtualIps']),
+  ippool: new Set(['ipPools']),
+  vpn: new Set(['ipsecPhase1', 'ipsecPhase2']),
+  route: new Set(['interfaces']),
+  sdwan: new Set(['sdwanMembers', 'sdwanServices', 'sdwanHealthChecks']),
+  authentication: new Set(['userGroups', 'authenticationServers']),
+  certificate: new Set(['certificates']),
+  unknown: new Set(),
 };
 
 function commandKey(command: string): string | undefined {
@@ -74,7 +113,8 @@ function isDisabled(item: InventoryItem): boolean {
   return item.commands.some(command => /^set\s+status\s+disable\b/i.test(command));
 }
 
-const orphanCategories = new Set(['addressObjects', 'addressGroups', 'services', 'serviceGroups', 'virtualIps', 'ipPools', 'securityProfiles', 'userGroups', 'authenticationServers', 'certificates']);
+// Only report candidate-orphan objects where inbound-reference analysis is meaningful.
+const orphanCategories = new Set(['addressObjects', 'addressGroups', 'services', 'serviceGroups', 'virtualIps', 'ipPools', 'securityProfiles']);
 
 export function buildDependencyGraph(inventory: ConfigurationInventory): DependencyGraph {
   const entries = allItems(inventory);
@@ -88,7 +128,10 @@ export function buildDependencyGraph(inventory: ConfigurationInventory): Depende
   }));
 
   const lookup = new Map<string, DependencyNode[]>();
-  for (const node of nodes) lookup.set(normalise(node.name), [...(lookup.get(normalise(node.name)) ?? []), node]);
+  for (const node of nodes) {
+    const key = normalise(node.name);
+    lookup.set(key, [...(lookup.get(key) ?? []), node]);
+  }
 
   const edges: DependencyEdge[] = [];
   const unresolved: DependencyIssue[] = [];
@@ -97,11 +140,13 @@ export function buildDependencyGraph(inventory: ConfigurationInventory): Depende
     const refs = extractReferences(entry.category, entry.item);
     source.references = refs.map(ref => normalise(ref.reference));
     for (const { reference, kind } of refs) {
-      const targets = (lookup.get(normalise(reference)) ?? []).filter(target => target.id !== source.id);
+      const allowed = targetCategories[kind];
+      const targets = (lookup.get(normalise(reference)) ?? []).filter(target => target.id !== source.id && allowed.has(target.category));
       if (targets.length) {
         for (const target of targets) edges.push({ from: source.id, to: target.id, reference: cleanName(reference), kind: categoryKind(target.category) });
       } else {
-        unresolved.push({ from: source.id, reference: cleanName(reference), kind, path: source.path, severity: source.category === 'firewallPolicies' ? 'high' : 'medium', reason: `Referenced ${kind} object was not found in the source inventory.` });
+        const severity = source.category === 'firewallPolicies' && (kind === 'interface' || kind === 'address' || kind === 'service') ? 'high' : kind === 'sdwan' || kind === 'certificate' ? 'low' : 'medium';
+        unresolved.push({ from: source.id, reference: cleanName(reference), kind, path: source.path, severity, reason: `Referenced ${kind} object was not found in the expected source category.` });
       }
     }
   }
