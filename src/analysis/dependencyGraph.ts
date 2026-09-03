@@ -24,6 +24,8 @@ const categoryKind = (category: string): DependencyKind => {
 const normalise = (value: string) => value.replace(/^['"]|['"]$/g, '').trim().toLowerCase();
 const cleanName = (value: string) => value.replace(/^['"]|['"]$/g, '').trim();
 const excluded = new Set(['vdoms', 'model', 'firmware', 'hostname']);
+const literal = /^(all|any|none|enable|disable|always|never)$/i;
+const ipOrCidr = /^(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?(?::\d+)?$/;
 
 function allItems(inventory: ConfigurationInventory): Array<{ category: string; item: InventoryItem }> {
   return Object.entries(inventory)
@@ -34,16 +36,16 @@ function allItems(inventory: ConfigurationInventory): Array<{ category: string; 
 function values(command: string): string[] {
   const match = command.match(/^(?:set|append|unselect)\s+\S+\s+(.+)$/i);
   if (!match) return [];
-  return match[1].split(/\s+/).map(cleanName).filter(Boolean);
+  return match[1].split(/\s+/).map(cleanName).filter(value => !literal.test(value) && !ipOrCidr.test(value));
 }
 
 const referenceTargets: Record<string, Record<string, DependencyKind>> = {
-  firewallPolicies: { srcaddr: 'address', dstaddr: 'address', service: 'service', srcintf: 'interface', dstintf: 'interface', poolname: 'ippool', webfilter_profile: 'security-profile', dnsfilter_profile: 'security-profile', av_profile: 'security-profile', ips_sensor: 'security-profile', application_list: 'security-profile', groups: 'authentication' },
+  firewallPolicies: { srcaddr: 'address', dstaddr: 'address', service: 'service', srcintf: 'interface', dstintf: 'interface', poolname: 'ippool', 'webfilter-profile': 'security-profile', 'dnsfilter-profile': 'security-profile', 'av-profile': 'security-profile', 'ips-sensor': 'security-profile', 'application-list': 'security-profile', groups: 'authentication' },
   addressGroups: { member: 'address' },
   serviceGroups: { member: 'service' },
-  virtualIps: { extintf: 'interface', mappedip: 'address', extip: 'address' },
+  virtualIps: { extintf: 'interface' },
   ipPools: { extintf: 'interface' },
-  staticRoutes: { device: 'interface', gateway: 'interface' },
+  staticRoutes: { device: 'interface' },
   sdwanServices: { members: 'sdwan', 'health-check': 'sdwan' },
   ipsecPhase1: { interface: 'interface', authusrgrp: 'authentication' },
   ipsecPhase2: { phase1name: 'vpn' },
@@ -63,9 +65,7 @@ function extractReferences(category: string, item: InventoryItem): Array<{ refer
   for (const command of item.commands) {
     const key = commandKey(command);
     if (!key || !rules[key]) continue;
-    for (const value of values(command)) {
-      if (!/^(all|any|none|enable|disable|always|never)$/i.test(value)) result.push({ reference: value, kind: rules[key] });
-    }
+    for (const value of values(command)) result.push({ reference: value, kind: rules[key] });
   }
   return result;
 }
