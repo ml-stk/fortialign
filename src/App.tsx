@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ChangeEvent } from 'react';
 import { compileFortiOS, migrateWithProfile, parseFortiOS, validateMigration, type MigrationFinding } from './utils/fortiEngine';
 import { fortigate100ETo120G714Profile } from './migrations/profiles';
 import { buildConfigurationInventory, inventoryTotals, type ConfigurationInventory } from './analysis/configInventory';
@@ -29,7 +29,7 @@ export default function App() {
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [reportUrl, setReportUrl] = useState<string | null>(null);
 
-  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
     const rawText = await file.text();
