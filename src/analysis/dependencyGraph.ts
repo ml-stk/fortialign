@@ -33,10 +33,17 @@ function allItems(inventory: ConfigurationInventory): Array<{ category: string; 
     .flatMap(([category, value]) => (value as InventoryItem[]).map(item => ({ category, item })));
 }
 
+function tokenise(value: string): string[] {
+  const tokens: string[] = [];
+  const pattern = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+/g;
+  for (const match of value.match(pattern) ?? []) tokens.push(cleanName(match));
+  return tokens;
+}
+
 function values(command: string): string[] {
   const match = command.match(/^(?:set|append|unselect)\s+\S+\s+(.+)$/i);
   if (!match) return [];
-  return match[1].split(/\s+/).map(cleanName).filter(value => !literal.test(value) && !ipOrCidr.test(value));
+  return tokenise(match[1]).filter(value => !literal.test(value) && !ipOrCidr.test(value));
 }
 
 const referenceTargets: Record<string, Record<string, DependencyKind>> = {
@@ -51,7 +58,6 @@ const referenceTargets: Record<string, Record<string, DependencyKind>> = {
   ipsecPhase2: { phase1name: 'vpn' },
   userGroups: { member: 'authentication' },
   authenticationServers: { certificate: 'certificate' },
-  interfaces: { 'dhcp-relay-ip': 'interface' },
 };
 
 function commandKey(command: string): string | undefined {
@@ -97,11 +103,13 @@ export function buildDependencyGraph(inventory: ConfigurationInventory): Depende
     const refs = extractReferences(entry.category, entry.item);
     source.references = refs.map(ref => normalise(ref.reference));
     for (const { reference, kind } of refs) {
-      const targets = (lookup.get(normalise(reference)) ?? []).filter(target => target.id !== source.id);
+      const expectedCategories = nodes.filter(node => categoryKind(node.category) === kind && node.id !== source.id);
+      const targets = (lookup.get(normalise(reference)) ?? []).filter(target => target.id !== source.id && expectedCategories.some(expected => expected.id === target.id));
       if (targets.length) {
         for (const target of targets) edges.push({ from: source.id, to: target.id, reference: cleanName(reference), kind: categoryKind(target.category) });
       } else {
-        unresolved.push({ from: source.id, reference: cleanName(reference), kind, path: source.path, severity: source.category === 'firewallPolicies' ? 'high' : 'medium', reason: `Referenced ${kind} object was not found in the source inventory.` });
+        const severity = source.category === 'firewallPolicies' ? 'high' : kind === 'sdwan' || kind === 'certificate' ? 'low' : 'medium';
+        unresolved.push({ from: source.id, reference: cleanName(reference), kind, path: source.path, severity, reason: `Referenced ${kind} object was not found in the expected source inventory category.` });
       }
     }
   }
@@ -122,4 +130,11 @@ export function dependencySummary(graph: DependencyGraph) {
     referencedObjects: new Set(graph.edges.map(edge => edge.to)).size,
     consumers: new Set(graph.edges.map(edge => edge.from)).size,
   };
+}
+
+export function dependencyBreakdown(graph: DependencyGraph) {
+  const unresolvedByKind = Object.fromEntries((['interface', 'address', 'service', 'security-profile', 'vip', 'ippool', 'vpn', 'route', 'sdwan', 'authentication', 'certificate', 'unknown'] as DependencyKind[]).map(kind => [kind, graph.unresolved.filter(issue => issue.kind === kind).length]));
+  const orphanByCategory = Object.fromEntries([...new Set(graph.orphans.map(node => node.category))].sort().map(category => [category, graph.orphans.filter(node => node.category === category).length]));
+  const unresolvedBySeverity = Object.fromEntries((['high', 'medium', 'low'] as const).map(severity => [severity, graph.unresolved.filter(issue => issue.severity === severity).length]));
+  return { unresolvedByKind, unresolvedBySeverity, orphanByCategory };
 }
