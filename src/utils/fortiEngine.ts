@@ -45,7 +45,6 @@ export interface MigrationResult {
 export function parseFortiOS(rawConfig: string): FortiOSBlock {
   const root: FortiOSBlock = { type: 'root', name: 'root', commands: [], children: [] };
   const stack: FortiOSBlock[] = [root];
-
   for (const rawLine of rawConfig.split(/\r?\n/)) {
     const trimmed = rawLine.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
@@ -67,9 +66,7 @@ function countBlocks(block: FortiOSBlock): { configs: number; edits: number; com
   let configs = block.type === 'config' ? 1 : 0;
   let edits = block.type === 'edit' ? 1 : 0;
   let commands = block.commands.length;
-  for (const child of block.children) {
-    const c = countBlocks(child); configs += c.configs; edits += c.edits; commands += c.commands;
-  }
+  for (const child of block.children) { const c = countBlocks(child); configs += c.configs; edits += c.edits; commands += c.commands; }
   return { configs, edits, commands };
 }
 
@@ -82,8 +79,18 @@ function replaceCliToken(command: string, mapping: Record<string, string>): stri
   return result;
 }
 
+function uniquifyFindingIds(findings: MigrationFinding[]): MigrationFinding[] {
+  const seen = new Map<string, number>();
+  return findings.map(finding => {
+    const count = (seen.get(finding.id) ?? 0) + 1;
+    seen.set(finding.id, count);
+    return count === 1 ? finding : { ...finding, id: `${finding.id}-${count}` };
+  });
+}
+
 function scanSecurityRisks(block: FortiOSBlock): MigrationFinding[] {
   const findings: MigrationFinding[] = []; let n = 1;
+  const credentialPaths = new Set<string>();
   const visit = (node: FortiOSBlock, path: string) => {
     for (const command of node.commands) {
       const lower = command.toLowerCase();
@@ -92,11 +99,14 @@ function scanSecurityRisks(block: FortiOSBlock): MigrationFinding[] {
       if (/^set\s+allowaccess\b/i.test(command) && /\bhttp\b/i.test(command)) findings.push({ id: `MGMT-${String(n++).padStart(3, '0')}`, severity: 'high', status: 'REVIEW', category: 'Management', title: 'HTTP administrative access enabled', message: 'The source configuration permits HTTP management access.', sourcePath: path, recommendation: 'Disable HTTP management unless explicitly required; prefer HTTPS/SSH restricted to management sources.' });
       if (/^set\s+admin-https-redirect\s+disable\b/i.test(command)) findings.push({ id: `MGMT-${String(n++).padStart(3, '0')}`, severity: 'medium', status: 'REVIEW', category: 'Management', title: 'HTTPS redirect disabled', message: 'HTTP-to-HTTPS administrative redirect is disabled.', sourcePath: path, recommendation: 'Enable the redirect if HTTP remains enabled, or remove HTTP administration entirely.' });
       if (/^set\s+switch-controller\s+enable\b/i.test(command)) findings.push({ id: `HW-${String(n++).padStart(3, '0')}`, severity: 'medium', status: 'REVIEW', category: 'Hardware', title: 'FortiSwitch controller enabled', message: 'Switch-controller configuration may depend on target interface architecture.', sourcePath: path, recommendation: 'Confirm FortiLink/FortiSwitch usage and map the target interface architecture before migration.' });
-      if (/\b(set\s+(password|passwd|psksecret|secret)|set\s+username)\b/i.test(command)) findings.push({ id: `SEC-${String(n++).padStart(3, '0')}`, severity: 'high', status: 'MANUAL', category: 'Secrets', title: 'Credential/secret-bearing command detected', message: 'A credential or secret-bearing command exists in the source.', sourcePath: path, recommendation: 'Do not expose secrets in reports. Verify portability or require secure re-entry on the target.' });
+      if (/\b(set\s+(password|passwd|psksecret|secret)|set\s+username)\b/i.test(command) && !credentialPaths.has(path)) {
+        credentialPaths.add(path);
+        findings.push({ id: `SEC-${String(n++).padStart(3, '0')}`, severity: 'high', status: 'MANUAL', category: 'Secrets', title: 'Credential/secret-bearing configuration detected', message: 'A credential or secret-bearing command exists in this source configuration object. Individual secret values are intentionally not included in the finding.', sourcePath: path, recommendation: 'Do not expose secrets in reports. Verify portability or require secure re-entry on the target.' });
+      }
     }
     node.children.forEach(child => visit(child, `${path}/${child.name}`));
   };
-  visit(block, block.name); return findings;
+  visit(block, block.name); return uniquifyFindingIds(findings);
 }
 
 export function migrateWithProfile(source: FortiOSBlock, profile: MigrationProfile): MigrationResult {
@@ -109,10 +119,9 @@ export function migrateWithProfile(source: FortiOSBlock, profile: MigrationProfi
     node.children.forEach(child => visit(child, `${path}/${child.name}`));
   };
   visit(ast, 'root'); findings.push(...scanSecurityRisks(ast)); const counts = countBlocks(ast);
-  return { ast, findings, statistics: { ...counts, transformedCommands } };
+  return { ast, findings: uniquifyFindingIds(findings), statistics: { ...counts, transformedCommands } };
 }
 
-// Legacy compatibility wrapper. New code should use migrateWithProfile().
 export function migrate300Eto400F(ast: FortiOSBlock): FortiOSBlock {
   return migrateWithProfile(ast, { sourceModel: 'FortiGate 300E', destinationModel: 'FortiGate 400F', sourceFirmware: 'FortiOS 7.x', destinationFirmware: 'FortiOS 7.x', interfaceMapping: { '"port1"': '"x1"', '"port2"': '"x2"', '"port17"': '"port21"' } }).ast;
 }
@@ -129,5 +138,5 @@ export function validateMigration(result: MigrationResult, profile: MigrationPro
   const findings = [...result.findings];
   if (!profile.destinationModel || !profile.destinationFirmware) findings.push({ id: 'VAL-001', severity: 'critical', status: 'BLOCK', category: 'Target', title: 'Target profile incomplete', message: 'Destination model and firmware are required.', recommendation: 'Select an explicit target appliance and FortiOS release before generating a migration.' });
   if (Object.keys(profile.interfaceMapping).length === 0) findings.push({ id: 'HW-001', severity: 'critical', status: 'BLOCK', category: 'Hardware', title: 'Interface mapping not defined', message: 'No source-to-target interface mapping has been supplied.', recommendation: 'Map all required source interfaces before deployment.' });
-  return findings;
+  return uniquifyFindingIds(findings);
 }
