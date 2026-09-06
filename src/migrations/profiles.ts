@@ -8,7 +8,7 @@ export const fortigate100ETo120G714Profile: MigrationProfile = {
   destinationFirmware: '7.4.12 build 2902',
   // Deterministic same-name mappings are safe for the 120G target.
   // Interfaces without an exact target equivalent remain explicitly unmapped
-  // and are blocked by validation rather than silently renamed.
+  // and are surfaced for engineering review rather than silently assigned.
   interfaceMapping: {
     '"wan1"': '"wan1"',
     '"wan2"': '"wan2"',
