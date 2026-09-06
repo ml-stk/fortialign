@@ -27,6 +27,7 @@ export interface ConfigurationInventory {
   ipsecPhase1: InventoryItem[];
   ipsecPhase2: InventoryItem[];
   userGroups: InventoryItem[];
+  localUsers: InventoryItem[];
   authenticationServers: InventoryItem[];
   securityProfiles: InventoryItem[];
   certificates: InventoryItem[];
@@ -38,7 +39,7 @@ export interface ConfigurationInventory {
 const emptyInventory = (): ConfigurationInventory => ({
   vdoms: [], interfaces: [], addressObjects: [], addressGroups: [], services: [], serviceGroups: [],
   firewallPolicies: [], virtualIps: [], ipPools: [], staticRoutes: [], sdwanMembers: [], sdwanServices: [],
-  sdwanHealthChecks: [], ipsecPhase1: [], ipsecPhase2: [], userGroups: [], authenticationServers: [],
+  sdwanHealthChecks: [], ipsecPhase1: [], ipsecPhase2: [], userGroups: [], localUsers: [], authenticationServers: [],
   securityProfiles: [], certificates: [], dhcpServers: [], management: [], otherConfigs: []
 });
 
@@ -85,7 +86,8 @@ export function buildConfigurationInventory(root: FortiOSBlock): ConfigurationIn
       else if (p.includes('vpn ipsec phase1')) inventory.ipsecPhase1.push(entry);
       else if (p.includes('vpn ipsec phase2')) inventory.ipsecPhase2.push(entry);
       else if (p.includes('user group')) inventory.userGroups.push(entry);
-      else if (p.includes('user ldap') || p.includes('user radius') || p.includes('user tacacs')) inventory.authenticationServers.push(entry);
+      else if (p.includes('user local')) inventory.localUsers.push(entry);
+      else if (p.includes('user ldap') || p.includes('user radius') || p.includes('user tacacs') || p.includes('user fsso') || p.includes('user rssso')) inventory.authenticationServers.push(entry);
       else if (p.includes('antivirus profile') || p.includes('ips sensor') || p.includes('webfilter profile') || p.includes('dnsfilter profile') || p.includes('application list') || p.includes('ssl-ssh-profile')) inventory.securityProfiles.push(entry);
       else if (p.includes('certificate')) inventory.certificates.push(entry);
       else if (p.includes('system dhcp server')) inventory.dhcpServers.push(entry);
