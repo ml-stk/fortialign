@@ -65,33 +65,53 @@ function item(node: FortiOSBlock, path: string): InventoryItem {
   return { name: node.name, path, commands: [...node.commands], references: references(node.commands) };
 }
 
+// Only classify edit nodes that are direct children of the named FortiOS
+// configuration table. Nested edits (for example webfilter ftgd filters,
+// IPS entries, or application-list entries) are configuration internals, not
+// independent inventory objects. Counting them as profiles massively
+// inflates orphan candidates.
+function isDirectEdit(path: string, section: string): boolean {
+  const prefix = `root/${section.toLowerCase()}/`;
+  const lower = path.toLowerCase();
+  if (!lower.startsWith(prefix)) return false;
+  return lower.slice(prefix.length).split('/').length === 1;
+}
+
 export function buildConfigurationInventory(root: FortiOSBlock): ConfigurationInventory {
   const inventory = emptyInventory();
   const visit = (node: FortiOSBlock, path: string) => {
-    const p = path.toLowerCase();
     if (node.type === 'edit') {
       const entry = item(node, path);
-      if (p.includes('system interface')) inventory.interfaces.push(entry);
-      else if (p.includes('firewall address')) inventory.addressObjects.push(entry);
-      else if (p.includes('firewall addrgrp')) inventory.addressGroups.push(entry);
-      else if (p.includes('firewall service custom')) inventory.services.push(entry);
-      else if (p.includes('firewall service group')) inventory.serviceGroups.push(entry);
-      else if (p.includes('firewall policy')) inventory.firewallPolicies.push(entry);
-      else if (p.includes('firewall vip')) inventory.virtualIps.push(entry);
-      else if (p.includes('firewall ippool')) inventory.ipPools.push(entry);
-      else if (p.includes('router static')) inventory.staticRoutes.push(entry);
-      else if (p.includes('system sdwan members')) inventory.sdwanMembers.push(entry);
-      else if (p.includes('system sdwan service')) inventory.sdwanServices.push(entry);
-      else if (p.includes('system sdwan health-check')) inventory.sdwanHealthChecks.push(entry);
-      else if (p.includes('vpn ipsec phase1')) inventory.ipsecPhase1.push(entry);
-      else if (p.includes('vpn ipsec phase2')) inventory.ipsecPhase2.push(entry);
-      else if (p.includes('user group')) inventory.userGroups.push(entry);
-      else if (p.includes('user local')) inventory.localUsers.push(entry);
-      else if (p.includes('user ldap') || p.includes('user radius') || p.includes('user tacacs') || p.includes('user fsso') || p.includes('user rssso')) inventory.authenticationServers.push(entry);
-      else if (p.includes('antivirus profile') || p.includes('ips sensor') || p.includes('webfilter profile') || p.includes('dnsfilter profile') || p.includes('application list') || p.includes('ssl-ssh-profile')) inventory.securityProfiles.push(entry);
-      else if (p.includes('certificate')) inventory.certificates.push(entry);
-      else if (p.includes('system dhcp server')) inventory.dhcpServers.push(entry);
-      else if (p.includes('system admin')) inventory.management.push(entry);
+      if (isDirectEdit(path, 'system interface')) inventory.interfaces.push(entry);
+      else if (isDirectEdit(path, 'firewall address')) inventory.addressObjects.push(entry);
+      else if (isDirectEdit(path, 'firewall addrgrp')) inventory.addressGroups.push(entry);
+      else if (isDirectEdit(path, 'firewall service custom')) inventory.services.push(entry);
+      else if (isDirectEdit(path, 'firewall service group')) inventory.serviceGroups.push(entry);
+      else if (isDirectEdit(path, 'firewall policy')) inventory.firewallPolicies.push(entry);
+      else if (isDirectEdit(path, 'firewall vip')) inventory.virtualIps.push(entry);
+      else if (isDirectEdit(path, 'firewall ippool')) inventory.ipPools.push(entry);
+      else if (isDirectEdit(path, 'router static')) inventory.staticRoutes.push(entry);
+      else if (isDirectEdit(path, 'system sdwan members')) inventory.sdwanMembers.push(entry);
+      else if (isDirectEdit(path, 'system sdwan service')) inventory.sdwanServices.push(entry);
+      else if (isDirectEdit(path, 'system sdwan health-check')) inventory.sdwanHealthChecks.push(entry);
+      else if (isDirectEdit(path, 'vpn ipsec phase1')) inventory.ipsecPhase1.push(entry);
+      else if (isDirectEdit(path, 'vpn ipsec phase2')) inventory.ipsecPhase2.push(entry);
+      else if (isDirectEdit(path, 'user group')) inventory.userGroups.push(entry);
+      else if (isDirectEdit(path, 'user local')) inventory.localUsers.push(entry);
+      else if (isDirectEdit(path, 'user ldap') || isDirectEdit(path, 'user radius') || isDirectEdit(path, 'user tacacs') || isDirectEdit(path, 'user fsso') || isDirectEdit(path, 'user rssso')) inventory.authenticationServers.push(entry);
+      else if (
+        isDirectEdit(path, 'antivirus profile') ||
+        isDirectEdit(path, 'ips sensor') ||
+        isDirectEdit(path, 'webfilter profile') ||
+        isDirectEdit(path, 'dnsfilter profile') ||
+        isDirectEdit(path, 'application list') ||
+        isDirectEdit(path, 'firewall ssl-ssh-profile') ||
+        isDirectEdit(path, 'file-filter profile') ||
+        isDirectEdit(path, 'emailfilter profile')
+      ) inventory.securityProfiles.push(entry);
+      else if (isDirectEdit(path, 'system dhcp server')) inventory.dhcpServers.push(entry);
+      else if (path.toLowerCase().includes('certificate')) inventory.certificates.push(entry);
+      else if (path.toLowerCase().includes('system admin')) inventory.management.push(entry);
       else inventory.otherConfigs.push(entry);
     }
     node.children.forEach(child => visit(child, `${path}/${child.name}`));
