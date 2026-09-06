@@ -7,7 +7,12 @@ Batch 7 focuses on making the migration result easier to assess and safer to rev
 ## Assurance changes
 
 - Add a migration readiness state: `BLOCK`, `REVIEW`, or `PASS`.
-- Provide dependency diagnostics with source path, reference, dependency type, severity, and reason.
+- Provide dependency diagnostics with source path, reference, dependency type, severity, status, and reason.
+- Distinguish genuinely unresolved dependencies from dependencies that require engineering review.
+- Recognize `virtual-wan-link` as the FortiGate SD-WAN logical interface rather than a missing physical interface.
+- Model local FortiGate users separately from authentication servers when resolving user-group membership.
+- Treat user-group identities that cannot be resolved locally as authentication reviews rather than automatic missing-object failures, because they may represent LDAP/RADIUS/TACACS+, FSSO, or remote-group identities.
+- Provide dependency review counts alongside unresolved dependency counts.
 - Provide unresolved dependency counts by type and severity.
 - Provide orphan-candidate counts by inventory category.
 - Treat orphan objects as candidates for review rather than automatic migration failures.
@@ -32,12 +37,15 @@ Before Batch 7 is merged into production:
 3. `npm run build` completes successfully.
 4. A real FortiGate configuration is imported locally without sending the configuration to an external service.
 5. Quoted FortiGate object names remain intact during dependency analysis.
-6. Unresolved references include actionable source-path diagnostics.
-7. Orphan candidates are clearly separated from unresolved references.
-8. Finding IDs are unique within the generated report.
-9. Credential/secret findings are not emitted once for every secret-bearing command in the same configuration object.
-10. A missing interface mapping continues to produce a critical migration blocker for the current 100E → 120G profile.
-11. The generated configuration remains a candidate and is not represented as production-safe without target-device validation.
+6. Genuine unresolved references include actionable source-path diagnostics.
+7. `virtual-wan-link` references are classified as SD-WAN logical-interface reviews, not missing-interface blockers.
+8. User-group membership is resolved against local users/authentication servers where possible, with remote identities classified as review items rather than false missing-object errors.
+9. Dependency reviews are reported separately from genuine unresolved references.
+10. Orphan candidates are clearly separated from unresolved references.
+11. Finding IDs are unique within the generated report.
+12. Credential/secret findings are not emitted once for every secret-bearing command in the same configuration object.
+13. A missing interface mapping continues to produce a critical migration blocker for the current 100E → 120G profile.
+14. The generated configuration remains a candidate and is not represented as production-safe without target-device validation.
 
 ## Current profile
 
