@@ -92,33 +92,92 @@ function cleanInterfaceName(value: string): string {
   return value.replace(/^['"]|['"]$/g, '').trim();
 }
 
-function physicalInterfaceNames(block: FortiOSBlock): string[] {
-  const names: string[] = [];
-  const visit = (node: FortiOSBlock, path: string, inSystemInterface: boolean) => {
+interface PhysicalInterfaceInfo {
+  name: string;
+  disabled: boolean;
+}
+
+function physicalInterfaceInfo(block: FortiOSBlock): PhysicalInterfaceInfo[] {
+  const interfaces: PhysicalInterfaceInfo[] = [];
+  const visit = (node: FortiOSBlock, inSystemInterface: boolean) => {
     const currentIsSystemInterface = node.type === 'config' && node.name.toLowerCase() === 'system interface';
     const isPhysical = node.commands.some(command => /^set\s+type\s+physical\b/i.test(command));
-    if (node.type === 'edit' && inSystemInterface && isPhysical) names.push(cleanInterfaceName(node.name));
-    node.children.forEach(child => visit(child, `${path}/${child.name}`, inSystemInterface || currentIsSystemInterface));
+    if (node.type === 'edit' && inSystemInterface && isPhysical) {
+      interfaces.push({
+        name: cleanInterfaceName(node.name),
+        disabled: node.commands.some(command => /^set\s+status\s+disable\b/i.test(command)),
+      });
+    }
+    node.children.forEach(child => visit(child, inSystemInterface || currentIsSystemInterface));
   };
-  visit(block, 'root', false);
-  return [...new Set(names)];
+  visit(block, false);
+  return interfaces;
+}
+
+function haHeartbeatInterfaces(block: FortiOSBlock): Set<string> {
+  const interfaces = new Set<string>();
+  const visit = (node: FortiOSBlock, inSystemHa: boolean) => {
+    const currentIsSystemHa = node.type === 'config' && node.name.toLowerCase() === 'system ha';
+    if (inSystemHa || currentIsSystemHa) {
+      for (const command of node.commands) {
+        const match = command.match(/^set\s+hbdev\s+(.+)$/i);
+        if (!match) continue;
+        const tokens = match[1].match(/(?:"[^"]+"|'[^']+'|\S+)/g) ?? [];
+        for (const token of tokens) {
+          const value = cleanInterfaceName(token);
+          if (value && !/^\d+(?:\.\d+)?$/.test(value)) interfaces.add(value);
+        }
+      }
+    }
+    node.children.forEach(child => visit(child, inSystemHa || currentIsSystemHa));
+  };
+  visit(block, false);
+  return interfaces;
 }
 
 function interfaceMappingFindings(source: FortiOSBlock, profile: MigrationProfile): MigrationFinding[] {
-  const physical = physicalInterfaceNames(source);
+  const physical = physicalInterfaceInfo(source);
   const mapped = new Set(Object.keys(profile.interfaceMapping).map(cleanInterfaceName));
-  const unmapped = physical.filter(name => !mapped.has(name));
-  if (!unmapped.length) return [];
-  return [{
-    id: 'HW-001',
-    severity: 'critical',
-    status: 'BLOCK',
+  const haInterfaces = haHeartbeatInterfaces(source);
+  const findings: MigrationFinding[] = [];
+  const unmapped = physical.filter(item => !mapped.has(item.name) && !item.disabled && !haInterfaces.has(item.name));
+
+  if (unmapped.length) {
+    findings.push({
+      id: 'HW-001',
+      severity: 'medium',
+      status: 'REVIEW',
+      category: 'Hardware',
+      title: 'Source-specific physical interface requires target assignment',
+      message: `The source contains ${unmapped.length} active physical interface(s) without an exact target mapping: ${unmapped.map(item => item.name).join(', ')}.`,
+      sourcePath: 'root/system interface',
+      recommendation: 'Review the target appliance port layout and assign an appropriate target interface for each source-specific interface. FortiAlign does not make an arbitrary hardware-port assignment.',
+    });
+  }
+
+  physical.filter(item => !mapped.has(item.name) && haInterfaces.has(item.name)).forEach(item => findings.push({
+    id: 'HW-002',
+    severity: 'medium',
+    status: 'REVIEW',
     category: 'Hardware',
-    title: 'Physical interface mapping incomplete',
-    message: `The source contains ${unmapped.length} physical interface(s) without an explicit source-to-target mapping: ${unmapped.join(', ')}.`,
+    title: 'HA heartbeat interface requires target validation',
+    message: `Source interface ${item.name} is used as an HA heartbeat interface and has no exact target mapping.`,
+    sourcePath: 'root/system ha',
+    recommendation: 'Confirm the target HA/management port design and rebuild the heartbeat binding explicitly on the destination appliance.',
+  }));
+
+  physical.filter(item => !mapped.has(item.name) && item.disabled && !haInterfaces.has(item.name)).forEach(item => findings.push({
+    id: 'HW-003',
+    severity: 'low',
+    status: 'REVIEW',
+    category: 'Hardware',
+    title: 'Disabled physical interface not mapped',
+    message: `Source interface ${item.name} is a disabled physical interface without an exact target mapping.`,
     sourcePath: 'root/system interface',
-    recommendation: 'Map every required source physical interface to a valid target interface, or explicitly document why an unused source interface will not be migrated. FortiAlign will not silently rename or discard physical interfaces.',
-  }];
+    recommendation: 'Confirm that the interface is intentionally unused. It does not require an automatic target-port assignment unless it is being brought into service.',
+  }));
+
+  return findings;
 }
 
 function scanSecurityRisks(block: FortiOSBlock): MigrationFinding[] {
