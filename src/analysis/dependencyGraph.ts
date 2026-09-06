@@ -48,7 +48,21 @@ function values(command: string): string[] {
 }
 
 const referenceTargets: Record<string, Record<string, DependencyKind>> = {
-  firewallPolicies: { srcaddr: 'address', dstaddr: 'address', service: 'service', srcintf: 'interface', dstintf: 'interface', poolname: 'ippool', 'webfilter-profile': 'security-profile', 'dnsfilter-profile': 'security-profile', 'av-profile': 'security-profile', 'ips-sensor': 'security-profile', 'application-list': 'security-profile', groups: 'authentication' },
+  firewallPolicies: {
+    srcaddr: 'address',
+    dstaddr: 'address',
+    service: 'service',
+    srcintf: 'interface',
+    dstintf: 'interface',
+    poolname: 'ippool',
+    'ssl-ssh-profile': 'security-profile',
+    'webfilter-profile': 'security-profile',
+    'dnsfilter-profile': 'security-profile',
+    'av-profile': 'security-profile',
+    'ips-sensor': 'security-profile',
+    'application-list': 'security-profile',
+    groups: 'authentication'
+  },
   addressGroups: { member: 'address' },
   serviceGroups: { member: 'service' },
   virtualIps: { extintf: 'interface' },
