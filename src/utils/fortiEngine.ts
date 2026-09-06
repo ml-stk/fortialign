@@ -1,6 +1,4 @@
-// FortiAlign migration core. The engine is intentionally data-driven so a
-// migration profile can describe source/target hardware and firmware without
-// hard-coding a single model pair.
+// FortiAlign migration core. The engine is intentionally data-driven so a migration profile can describe source/target hardware and firmware without hard-coding a single model pair.
 export interface FortiOSBlock {
   type: 'root' | 'config' | 'edit';
   name: string;
@@ -105,7 +103,7 @@ function physicalInterfaceInfo(block: FortiOSBlock): PhysicalInterfaceInfo[] {
     if (node.type === 'edit' && inSystemInterface && isPhysical) {
       interfaces.push({
         name: cleanInterfaceName(node.name),
-        disabled: node.commands.some(command => /^set\s+status\s+disable\b/i.test(command)),
+        disabled: node.commands.some(command => /^set\s+status\s+(?:disable|down)\b/i.test(command)),
       });
     }
     node.children.forEach(child => visit(child, inSystemInterface || currentIsSystemInterface));
@@ -171,8 +169,8 @@ function interfaceMappingFindings(source: FortiOSBlock, profile: MigrationProfil
     severity: 'low',
     status: 'REVIEW',
     category: 'Hardware',
-    title: 'Disabled physical interface not mapped',
-    message: `Source interface ${item.name} is a disabled physical interface without an exact target mapping.`,
+    title: 'Inactive physical interface not mapped',
+    message: `Source interface ${item.name} is inactive and has no exact target mapping.`,
     sourcePath: 'root/system interface',
     recommendation: 'Confirm that the interface is intentionally unused. It does not require an automatic target-port assignment unless it is being brought into service.',
   }));
