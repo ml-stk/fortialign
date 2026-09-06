@@ -54,7 +54,7 @@ function references(commands: string[]): string[] {
     if (/^(set|append|unselect)\s+/i.test(command)) {
       const tokens = command.split(/\s+/).slice(2);
       for (const token of tokens) {
-        if (!/^(all|any|none)$/i.test(token)) result.add(token.replace(/^['"]|['"]$/g, ''));
+        if (!/^(all|any|none)$/i.test(token)) result.add(token.replace(/^['\"]|['\"]$/g, ''));
       }
     }
   }
@@ -65,56 +65,52 @@ function item(node: FortiOSBlock, path: string): InventoryItem {
   return { name: node.name, path, commands: [...node.commands], references: references(node.commands) };
 }
 
-// Only classify edit nodes that are direct children of the named FortiOS
-// configuration table. Nested edits (for example webfilter ftgd filters,
-// IPS entries, or application-list entries) are configuration internals, not
-// independent inventory objects. Counting them as profiles massively
-// inflates orphan candidates.
-function isDirectEdit(path: string, section: string): boolean {
-  const prefix = `root/${section.toLowerCase()}/`;
-  const lower = path.toLowerCase();
-  if (!lower.startsWith(prefix)) return false;
-  return lower.slice(prefix.length).split('/').length === 1;
+// Classification must be based on the immediate parent table rather than
+// counting '/' characters in the rendered path. FortiGate object names may
+// legitimately contain '/', for example an address object named
+// "KnowBe4 147.160.167.0/26". Path-depth checks incorrectly treated those
+// names as nested configuration and dropped them from inventory.
+function isDirectEdit(parentPath: string, section: string): boolean {
+  return parentPath.toLowerCase() === `root/${section.toLowerCase()}`;
 }
 
 export function buildConfigurationInventory(root: FortiOSBlock): ConfigurationInventory {
   const inventory = emptyInventory();
-  const visit = (node: FortiOSBlock, path: string) => {
+  const visit = (node: FortiOSBlock, path: string, parentPath: string = '') => {
     if (node.type === 'edit') {
       const entry = item(node, path);
-      if (isDirectEdit(path, 'system interface')) inventory.interfaces.push(entry);
-      else if (isDirectEdit(path, 'firewall address')) inventory.addressObjects.push(entry);
-      else if (isDirectEdit(path, 'firewall addrgrp')) inventory.addressGroups.push(entry);
-      else if (isDirectEdit(path, 'firewall service custom')) inventory.services.push(entry);
-      else if (isDirectEdit(path, 'firewall service group')) inventory.serviceGroups.push(entry);
-      else if (isDirectEdit(path, 'firewall policy')) inventory.firewallPolicies.push(entry);
-      else if (isDirectEdit(path, 'firewall vip')) inventory.virtualIps.push(entry);
-      else if (isDirectEdit(path, 'firewall ippool')) inventory.ipPools.push(entry);
-      else if (isDirectEdit(path, 'router static')) inventory.staticRoutes.push(entry);
-      else if (isDirectEdit(path, 'system sdwan members')) inventory.sdwanMembers.push(entry);
-      else if (isDirectEdit(path, 'system sdwan service')) inventory.sdwanServices.push(entry);
-      else if (isDirectEdit(path, 'system sdwan health-check')) inventory.sdwanHealthChecks.push(entry);
-      else if (isDirectEdit(path, 'vpn ipsec phase1')) inventory.ipsecPhase1.push(entry);
-      else if (isDirectEdit(path, 'vpn ipsec phase2')) inventory.ipsecPhase2.push(entry);
-      else if (isDirectEdit(path, 'user group')) inventory.userGroups.push(entry);
-      else if (isDirectEdit(path, 'user local')) inventory.localUsers.push(entry);
-      else if (isDirectEdit(path, 'user ldap') || isDirectEdit(path, 'user radius') || isDirectEdit(path, 'user tacacs') || isDirectEdit(path, 'user fsso') || isDirectEdit(path, 'user rssso')) inventory.authenticationServers.push(entry);
+      if (isDirectEdit(parentPath, 'system interface')) inventory.interfaces.push(entry);
+      else if (isDirectEdit(parentPath, 'firewall address')) inventory.addressObjects.push(entry);
+      else if (isDirectEdit(parentPath, 'firewall addrgrp')) inventory.addressGroups.push(entry);
+      else if (isDirectEdit(parentPath, 'firewall service custom')) inventory.services.push(entry);
+      else if (isDirectEdit(parentPath, 'firewall service group')) inventory.serviceGroups.push(entry);
+      else if (isDirectEdit(parentPath, 'firewall policy')) inventory.firewallPolicies.push(entry);
+      else if (isDirectEdit(parentPath, 'firewall vip')) inventory.virtualIps.push(entry);
+      else if (isDirectEdit(parentPath, 'firewall ippool')) inventory.ipPools.push(entry);
+      else if (isDirectEdit(parentPath, 'router static')) inventory.staticRoutes.push(entry);
+      else if (isDirectEdit(parentPath, 'system sdwan members')) inventory.sdwanMembers.push(entry);
+      else if (isDirectEdit(parentPath, 'system sdwan service')) inventory.sdwanServices.push(entry);
+      else if (isDirectEdit(parentPath, 'system sdwan health-check')) inventory.sdwanHealthChecks.push(entry);
+      else if (isDirectEdit(parentPath, 'vpn ipsec phase1')) inventory.ipsecPhase1.push(entry);
+      else if (isDirectEdit(parentPath, 'vpn ipsec phase2')) inventory.ipsecPhase2.push(entry);
+      else if (isDirectEdit(parentPath, 'user group')) inventory.userGroups.push(entry);
+      else if (isDirectEdit(parentPath, 'user local')) inventory.localUsers.push(entry);
+      else if (isDirectEdit(parentPath, 'user ldap') || isDirectEdit(parentPath, 'user radius') || isDirectEdit(parentPath, 'user tacacs') || isDirectEdit(parentPath, 'user fsso') || isDirectEdit(parentPath, 'user rssso')) inventory.authenticationServers.push(entry);
       else if (
-        isDirectEdit(path, 'antivirus profile') ||
-        isDirectEdit(path, 'ips sensor') ||
-        isDirectEdit(path, 'webfilter profile') ||
-        isDirectEdit(path, 'dnsfilter profile') ||
-        isDirectEdit(path, 'application list') ||
-        isDirectEdit(path, 'firewall ssl-ssh-profile') ||
-        isDirectEdit(path, 'file-filter profile') ||
-        isDirectEdit(path, 'emailfilter profile')
+        isDirectEdit(parentPath, 'antivirus profile') ||
+        isDirectEdit(parentPath, 'ips sensor') ||
+        isDirectEdit(parentPath, 'webfilter profile') ||
+        isDirectEdit(parentPath, 'dnsfilter profile') ||
+        isDirectEdit(parentPath, 'application list') ||
+        isDirectEdit(parentPath, 'firewall ssl-ssh-profile') ||
+        isDirectEdit(parentPath, 'file-filter profile') ||
+        isDirectEdit(parentPath, 'emailfilter profile')
       ) inventory.securityProfiles.push(entry);
-      else if (isDirectEdit(path, 'system dhcp server')) inventory.dhcpServers.push(entry);
       else if (path.toLowerCase().includes('certificate')) inventory.certificates.push(entry);
       else if (path.toLowerCase().includes('system admin')) inventory.management.push(entry);
       else inventory.otherConfigs.push(entry);
     }
-    node.children.forEach(child => visit(child, `${path}/${child.name}`));
+    node.children.forEach(child => visit(child, `${path}/${child.name}`, path));
   };
   visit(root, 'root');
 
