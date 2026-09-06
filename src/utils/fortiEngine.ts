@@ -88,6 +88,39 @@ function uniquifyFindingIds(findings: MigrationFinding[]): MigrationFinding[] {
   });
 }
 
+function cleanInterfaceName(value: string): string {
+  return value.replace(/^['"]|['"]$/g, '').trim();
+}
+
+function physicalInterfaceNames(block: FortiOSBlock): string[] {
+  const names: string[] = [];
+  const visit = (node: FortiOSBlock, path: string) => {
+    const isSystemInterface = path.toLowerCase().endsWith('/system interface');
+    const isPhysical = node.commands.some(command => /^set\s+type\s+physical\b/i.test(command));
+    if (node.type === 'edit' && isSystemInterface && isPhysical) names.push(cleanInterfaceName(node.name));
+    node.children.forEach(child => visit(child, `${path}/${child.name}`));
+  };
+  visit(block, 'root');
+  return [...new Set(names)];
+}
+
+function interfaceMappingFindings(source: FortiOSBlock, profile: MigrationProfile): MigrationFinding[] {
+  const physical = physicalInterfaceNames(source);
+  const mapped = new Set(Object.keys(profile.interfaceMapping).map(cleanInterfaceName));
+  const unmapped = physical.filter(name => !mapped.has(name));
+  if (!unmapped.length) return [];
+  return [{
+    id: 'HW-001',
+    severity: 'critical',
+    status: 'BLOCK',
+    category: 'Hardware',
+    title: 'Physical interface mapping incomplete',
+    message: `The source contains ${unmapped.length} physical interface(s) without an explicit source-to-target mapping: ${unmapped.join(', ')}.`,
+    sourcePath: 'root/system interface',
+    recommendation: 'Map every required source physical interface to a valid target interface, or explicitly document why an unused source interface will not be migrated. FortiAlign will not silently rename or discard physical interfaces.',
+  }];
+}
+
 function scanSecurityRisks(block: FortiOSBlock): MigrationFinding[] {
   const findings: MigrationFinding[] = []; let n = 1;
   const credentialPaths = new Set<string>();
@@ -110,11 +143,23 @@ function scanSecurityRisks(block: FortiOSBlock): MigrationFinding[] {
 }
 
 export function migrateWithProfile(source: FortiOSBlock, profile: MigrationProfile): MigrationResult {
-  const ast = JSON.parse(JSON.stringify(source)) as FortiOSBlock; const findings: MigrationFinding[] = []; let transformedCommands = 0;
+  const ast = JSON.parse(JSON.stringify(source)) as FortiOSBlock;
+  const findings: MigrationFinding[] = interfaceMappingFindings(source, profile);
+  let transformedCommands = 0;
   const reviewConfigs = new Set(profile.reviewConfigs ?? []);
   const visit = (node: FortiOSBlock, path: string) => {
-    if (node.type === 'edit' && profile.interfaceMapping[node.name]) { node.name = profile.interfaceMapping[node.name]; transformedCommands++; }
-    node.commands = node.commands.map(command => { const transformed = replaceCliToken(command, profile.interfaceMapping); if (transformed !== command) transformedCommands++; return transformed; });
+    if (node.type === 'edit' && profile.interfaceMapping[node.name]) {
+      const mappedName = profile.interfaceMapping[node.name];
+      if (mappedName !== node.name) {
+        node.name = mappedName;
+        transformedCommands++;
+      }
+    }
+    node.commands = node.commands.map(command => {
+      const transformed = replaceCliToken(command, profile.interfaceMapping);
+      if (transformed !== command) transformedCommands++;
+      return transformed;
+    });
     if (node.type === 'config' && reviewConfigs.has(node.name)) findings.push({ id: `HW-${String(findings.length + 1).padStart(3, '0')}`, severity: 'high', status: 'MANUAL', category: 'Hardware', title: `Target compatibility review: ${node.name}`, message: `Configuration block ${node.name} is hardware/platform-sensitive and was retained.`, sourcePath: path, recommendation: 'Explicitly determine whether the block should be retained, transformed, or removed for the target platform.' });
     node.children.forEach(child => visit(child, `${path}/${child.name}`));
   };
@@ -137,6 +182,5 @@ export function compileFortiOS(block: FortiOSBlock, indentLevel = 0): string {
 export function validateMigration(result: MigrationResult, profile: MigrationProfile): MigrationFinding[] {
   const findings = [...result.findings];
   if (!profile.destinationModel || !profile.destinationFirmware) findings.push({ id: 'VAL-001', severity: 'critical', status: 'BLOCK', category: 'Target', title: 'Target profile incomplete', message: 'Destination model and firmware are required.', recommendation: 'Select an explicit target appliance and FortiOS release before generating a migration.' });
-  if (Object.keys(profile.interfaceMapping).length === 0) findings.push({ id: 'HW-001', severity: 'critical', status: 'BLOCK', category: 'Hardware', title: 'Interface mapping not defined', message: 'No source-to-target interface mapping has been supplied.', recommendation: 'Map all required source interfaces before deployment.' });
   return uniquifyFindingIds(findings);
 }
