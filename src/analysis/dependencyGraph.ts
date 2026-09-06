@@ -98,6 +98,11 @@ function addressReferenceCandidates(nodes: DependencyNode[], reference: string):
   return nodes.filter(node => (node.category === 'addressObjects' || node.category === 'addressGroups') && normalise(node.name) === target);
 }
 
+function vipReferenceCandidates(nodes: DependencyNode[], reference: string): DependencyNode[] {
+  const target = normalise(reference);
+  return nodes.filter(node => node.category === 'virtualIps' && normalise(node.name) === target);
+}
+
 function classifyAddressMiss(source: DependencyNode, reference: string): DependencyIssue {
   return {
     from: source.id,
@@ -141,11 +146,19 @@ export function buildDependencyGraph(inventory: ConfigurationInventory): Depende
       if (targets.length) {
         for (const target of targets) edges.push({ from: source.id, to: target.id, reference: cleanName(reference), kind: categoryKind(target.category) });
       } else if (kind === 'address') {
+        // FortiGate firewall policy dstaddr can reference a VIP directly.
+        // Resolve an address first when one exists; otherwise fall back to a
+        // virtual IP before declaring the reference unresolved.
         const addressCandidates = addressReferenceCandidates(nodes, reference);
         if (addressCandidates.length) {
           for (const target of addressCandidates) edges.push({ from: source.id, to: target.id, reference: cleanName(reference), kind: 'address' });
         } else {
-          unresolved.push(classifyAddressMiss(source, reference));
+          const vipCandidates = vipReferenceCandidates(nodes, reference);
+          if (vipCandidates.length) {
+            for (const target of vipCandidates) edges.push({ from: source.id, to: target.id, reference: cleanName(reference), kind: 'vip' });
+          } else {
+            unresolved.push(classifyAddressMiss(source, reference));
+          }
         }
       } else {
         const severity = source.category === 'firewallPolicies' ? 'high' : kind === 'certificate' ? 'low' : 'medium';
