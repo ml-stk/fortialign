@@ -61,6 +61,8 @@ const referenceTargets: Record<string, Record<string, DependencyKind>> = {
     'av-profile': 'security-profile',
     'ips-sensor': 'security-profile',
     'application-list': 'security-profile',
+    'emailfilter-profile': 'security-profile',
+    'file-filter-profile': 'security-profile',
     groups: 'authentication'
   },
   addressGroups: { member: 'address' },
