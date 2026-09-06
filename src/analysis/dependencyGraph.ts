@@ -72,7 +72,17 @@ function extractReferences(category: string, item: InventoryItem): Array<{ refer
   for (const command of item.commands) {
     const key = commandKey(command);
     if (!key || !rules[key]) continue;
-    for (const value of values(command)) result.push({ reference: value, kind: rules[key] });
+    for (const value of values(command)) {
+      const kind = rules[key];
+      // FortiGate policies attach to the logical SD-WAN interface using the
+      // normal srcintf/dstintf fields. Treat that well-known logical target
+      // as an SD-WAN review rather than a missing physical interface.
+      if (kind === 'interface' && normalise(value) === 'virtual-wan-link') {
+        result.push({ reference: value, kind: 'sdwan' });
+      } else {
+        result.push({ reference: value, kind });
+      }
+    }
   }
   return result;
 }
