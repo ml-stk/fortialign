@@ -94,13 +94,13 @@ function cleanInterfaceName(value: string): string {
 
 function physicalInterfaceNames(block: FortiOSBlock): string[] {
   const names: string[] = [];
-  const visit = (node: FortiOSBlock, path: string) => {
-    const isSystemInterface = path.toLowerCase().endsWith('/system interface');
+  const visit = (node: FortiOSBlock, path: string, inSystemInterface: boolean) => {
+    const currentIsSystemInterface = node.type === 'config' && node.name.toLowerCase() === 'system interface';
     const isPhysical = node.commands.some(command => /^set\s+type\s+physical\b/i.test(command));
-    if (node.type === 'edit' && isSystemInterface && isPhysical) names.push(cleanInterfaceName(node.name));
-    node.children.forEach(child => visit(child, `${path}/${child.name}`));
+    if (node.type === 'edit' && inSystemInterface && isPhysical) names.push(cleanInterfaceName(node.name));
+    node.children.forEach(child => visit(child, `${path}/${child.name}`, inSystemInterface || currentIsSystemInterface));
   };
-  visit(block, 'root');
+  visit(block, 'root', false);
   return [...new Set(names)];
 }
 
