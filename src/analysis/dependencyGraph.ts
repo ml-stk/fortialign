@@ -1,14 +1,13 @@
 import type { ConfigurationInventory, InventoryItem } from './configInventory';
 
-export type DependencyKind = 'interface' | 'address' | 'service' | 'security-profile' | 'vip' | 'ippool' | 'vpn' | 'route' | 'sdwan' | 'authentication' | 'unknown';
-
-export interface DependencyNode { id: string; name: string; category: string; path: string; references: string[]; }
+export type DependencyKind = 'interface' | 'address' | 'service' | 'security-profile' | 'vip' | 'ippool' | 'vpn' | 'route' | 'sdwan' | 'authentication' | 'certificate' | 'unknown';
+export type DependencyStatus = 'unresolved' | 'review';
+export type OrphanClassification = 'cleanup-candidate' | 'potentially-unused' | 'security-profile-review' | 'identity-system-review';
+export interface DependencyNode { id: string; name: string; category: string; path: string; references: string[]; enabled: boolean; }
 export interface DependencyEdge { from: string; to: string; reference: string; kind: DependencyKind; }
-export interface DependencyGraph {
-  nodes: DependencyNode[];
-  edges: DependencyEdge[];
-  unresolved: Array<{ from: string; reference: string; kind: DependencyKind; path: string }>;
-}
+export interface DependencyIssue { from: string; reference: string; kind: DependencyKind; path: string; severity: 'high' | 'medium' | 'low'; status: DependencyStatus; reason: string; }
+export interface OrphanDiagnostic { nodeId: string; name: string; category: string; path: string; classification: OrphanClassification; confidence: 'high' | 'medium' | 'low'; reason: string; }
+export interface DependencyGraph { nodes: DependencyNode[]; edges: DependencyEdge[]; unresolved: DependencyIssue[]; reviews: DependencyIssue[]; orphans: DependencyNode[]; orphanDiagnostics: OrphanDiagnostic[]; disabledReferenced: DependencyNode[]; }
 
 const categoryKind = (category: string): DependencyKind => {
   if (category === 'interfaces') return 'interface';
@@ -20,63 +19,243 @@ const categoryKind = (category: string): DependencyKind => {
   if (category === 'ipsecPhase1' || category === 'ipsecPhase2') return 'vpn';
   if (category === 'staticRoutes') return 'route';
   if (category === 'sdwanMembers' || category === 'sdwanServices' || category === 'sdwanHealthChecks') return 'sdwan';
-  if (category === 'authenticationServers' || category === 'userGroups') return 'authentication';
+  if (category === 'authenticationServers' || category === 'userGroups' || category === 'localUsers') return 'authentication';
+  if (category === 'certificates') return 'certificate';
   return 'unknown';
 };
 
 const normalise = (value: string) => value.replace(/^['"]|['"]$/g, '').trim().toLowerCase();
+const cleanName = (value: string) => value.replace(/^['"]|['"]$/g, '').trim();
+const excluded = new Set(['vdoms', 'model', 'firmware', 'hostname']);
+const literal = /^(all|any|none|enable|disable|always|never)$/i;
+const ipOrCidr = /^(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?(?::\d+)?$/;
 
-function allItems(inventory: ConfigurationInventory): InventoryItem[] {
-  const excluded = new Set(['vdoms', 'model', 'firmware', 'hostname']);
-  return Object.entries(inventory).filter(([key, value]) => !excluded.has(key) && Array.isArray(value)).flatMap(([, value]) => value as InventoryItem[]);
+function allItems(inventory: ConfigurationInventory): Array<{ category: string; item: InventoryItem }> {
+  return Object.entries(inventory)
+    .filter(([key, value]) => !excluded.has(key) && Array.isArray(value))
+    .flatMap(([category, value]) => (value as InventoryItem[]).map(item => ({ category, item })));
 }
 
-function isLiteral(value: string): boolean {
-  return /^(all|any|none|enable|disable|always|never|tcp|udp|icmp|ip|ipv4|ipv6)$/i.test(value)
-    || /^\d+(\.\d+){0,3}(:\d+)?$/.test(value)
-    || /^https?:\/\//i.test(value)
-    || /^[0-9a-f]{8,}$/i.test(value);
+function tokenise(value: string): string[] {
+  const tokens: string[] = [];
+  const pattern = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+/g;
+  for (const match of value.match(pattern) ?? []) tokens.push(cleanName(match));
+  return tokens;
 }
 
-function isLikelyObjectReference(source: DependencyNode, reference: string): boolean {
-  if (isLiteral(reference)) return false;
-  return ['firewallPolicies', 'virtualIps', 'ipsecPhase1', 'ipsecPhase2', 'userGroups', 'sdwanServices'].includes(source.category);
+function values(command: string): string[] {
+  const match = command.match(/^(?:set|append|unselect)\s+\S+\s+(.+)$/i);
+  if (!match) return [];
+  return tokenise(match[1]).filter(value => !literal.test(value) && !ipOrCidr.test(value));
 }
 
-function inferReferenceKind(source: DependencyNode): DependencyKind {
-  if (source.category === 'firewallPolicies') return 'unknown';
-  if (source.category === 'staticRoutes') return 'interface';
-  return categoryKind(source.category);
+const referenceTargets: Record<string, Record<string, DependencyKind>> = {
+  firewallPolicies: {
+    srcaddr: 'address',
+    dstaddr: 'address',
+    service: 'service',
+    srcintf: 'interface',
+    dstintf: 'interface',
+    poolname: 'ippool',
+    'ssl-ssh-profile': 'security-profile',
+    'webfilter-profile': 'security-profile',
+    'dnsfilter-profile': 'security-profile',
+    'av-profile': 'security-profile',
+    'ips-sensor': 'security-profile',
+    'application-list': 'security-profile',
+    'emailfilter-profile': 'security-profile',
+    'file-filter-profile': 'security-profile',
+    groups: 'authentication'
+  },
+  addressGroups: { member: 'address' },
+  serviceGroups: { member: 'service' },
+  virtualIps: { extintf: 'interface' },
+  ipPools: { extintf: 'interface' },
+  staticRoutes: { device: 'interface' },
+  sdwanServices: { members: 'sdwan', 'health-check': 'sdwan' },
+  ipsecPhase1: { interface: 'interface', authusrgrp: 'authentication' },
+  ipsecPhase2: { phase1name: 'vpn' },
+  userGroups: { member: 'authentication' },
+  authenticationServers: { certificate: 'certificate' },
+};
+
+function commandKey(command: string): string | undefined {
+  const match = command.match(/^(?:set|append|unselect)\s+(\S+)\s+/i);
+  return match?.[1]?.toLowerCase();
 }
 
-export function buildDependencyGraph(inventory: ConfigurationInventory): DependencyGraph {
-  const items = allItems(inventory);
-  const nodes: DependencyNode[] = items.map((item, index) => ({ id: `${item.path}#${index + 1}`, name: item.name.replace(/^['"]|['"]$/g, ''), category: itemCategory(item, inventory), path: item.path, references: item.references.map(normalise).filter(Boolean) }));
-  const lookup = new Map<string, DependencyNode[]>();
-  for (const node of nodes) lookup.set(node.name.toLowerCase(), [...(lookup.get(node.name.toLowerCase()) ?? []), node]);
-
-  const edges: DependencyEdge[] = [];
-  const unresolved: DependencyGraph['unresolved'] = [];
-  for (const source of nodes) {
-    for (const reference of source.references) {
-      const targets = lookup.get(reference) ?? [];
-      if (targets.length) {
-        for (const target of targets) if (target.id !== source.id) edges.push({ from: source.id, to: target.id, reference, kind: categoryKind(target.category) });
-      } else if (isLikelyObjectReference(source, reference)) {
-        unresolved.push({ from: source.id, reference, kind: inferReferenceKind(source), path: source.path });
+function extractReferences(category: string, item: InventoryItem): Array<{ reference: string; kind: DependencyKind }> {
+  const rules = referenceTargets[category] ?? {};
+  const result: Array<{ reference: string; kind: DependencyKind }> = [];
+  for (const command of item.commands) {
+    const key = commandKey(command);
+    if (!key || !rules[key]) continue;
+    for (const value of values(command)) {
+      const kind = rules[key];
+      // FortiGate policies attach to the logical SD-WAN interface using the
+      // normal srcintf/dstintf fields. Treat that well-known logical target
+      // as an SD-WAN review rather than a missing physical interface.
+      if (kind === 'interface' && normalise(value) === 'virtual-wan-link') {
+        result.push({ reference: value, kind: 'sdwan' });
+      } else {
+        result.push({ reference: value, kind });
       }
     }
   }
-  return { nodes, edges, unresolved };
+  return result;
 }
 
-function itemCategory(item: InventoryItem, inventory: ConfigurationInventory): string {
-  for (const [key, value] of Object.entries(inventory)) if (Array.isArray(value) && (value as InventoryItem[]).includes(item)) return key;
-  return 'otherConfigs';
+function isDisabled(item: InventoryItem): boolean {
+  return item.commands.some(command => /^set\s+status\s+disable\b/i.test(command));
+}
+
+const orphanCategories = new Set(['addressObjects', 'addressGroups', 'services', 'serviceGroups', 'virtualIps', 'ipPools', 'securityProfiles', 'userGroups', 'authenticationServers', 'certificates', 'localUsers']);
+
+function addressReferenceCandidates(nodes: DependencyNode[], reference: string): DependencyNode[] {
+  const target = normalise(reference);
+  return nodes.filter(node => (node.category === 'addressObjects' || node.category === 'addressGroups') && normalise(node.name) === target);
+}
+
+function vipReferenceCandidates(nodes: DependencyNode[], reference: string): DependencyNode[] {
+  const target = normalise(reference);
+  return nodes.filter(node => node.category === 'virtualIps' && normalise(node.name) === target);
+}
+
+function classifyAddressMiss(source: DependencyNode, reference: string): DependencyIssue {
+  return {
+    from: source.id,
+    reference: cleanName(reference),
+    kind: 'address',
+    path: source.path,
+    severity: 'high',
+    status: 'unresolved',
+    reason: `Referenced address object or address group was not found in the source inventory. Verify the source configuration contains a definition for "${cleanName(reference)}" and that it is not nested under an unsupported VDOM or configuration context.`,
+  };
+}
+
+function classifyOrphan(node: DependencyNode): OrphanDiagnostic {
+  if (!node.enabled) {
+    return {
+      nodeId: node.id,
+      name: node.name,
+      category: node.category,
+      path: node.path,
+      classification: 'cleanup-candidate',
+      confidence: 'high',
+      reason: 'The object is disabled and has no inbound dependency edge. Confirm it is intentionally retired before removing it from the migration set.',
+    };
+  }
+  if (node.category === 'securityProfiles') {
+    return {
+      nodeId: node.id,
+      name: node.name,
+      category: node.category,
+      path: node.path,
+      classification: 'security-profile-review',
+      confidence: 'medium',
+      reason: 'No modeled consumer was found. Security profiles can have implicit or configuration-specific usage, so do not remove without checking the source appliance.',
+    };
+  }
+  if (node.category === 'userGroups' || node.category === 'authenticationServers' || node.category === 'certificates' || node.category === 'localUsers') {
+    return {
+      nodeId: node.id,
+      name: node.name,
+      category: node.category,
+      path: node.path,
+      classification: 'identity-system-review',
+      confidence: 'low',
+      reason: 'No modeled consumer was found. Identity, authentication, and certificate objects may be consumed implicitly or by configuration contexts not yet modeled by the dependency rules.',
+    };
+  }
+  return {
+    nodeId: node.id,
+    name: node.name,
+    category: node.category,
+    path: node.path,
+    classification: 'potentially-unused',
+    confidence: 'medium',
+    reason: 'No modeled inbound dependency edge was found. Treat this as a review candidate, not proof that the object is unused.',
+  };
+}
+
+export function buildDependencyGraph(inventory: ConfigurationInventory): DependencyGraph {
+  const entries = allItems(inventory);
+  const nodes: DependencyNode[] = entries.map(({ category, item }, index) => ({
+    id: `${category}:${index + 1}`,
+    name: cleanName(item.name),
+    category,
+    path: item.path,
+    references: [],
+    enabled: !isDisabled(item),
+  }));
+
+  const lookup = new Map<string, DependencyNode[]>();
+  for (const node of nodes) lookup.set(normalise(node.name), [...(lookup.get(normalise(node.name)) ?? []), node]);
+
+  const edges: DependencyEdge[] = [];
+  const unresolved: DependencyIssue[] = [];
+  const reviews: DependencyIssue[] = [];
+  for (const [index, entry] of entries.entries()) {
+    const source = nodes[index];
+    const refs = extractReferences(entry.category, entry.item);
+    source.references = refs.map(ref => normalise(ref.reference));
+    for (const { reference, kind } of refs) {
+      if (kind === 'sdwan' && normalise(reference) === 'virtual-wan-link') {
+        reviews.push({ from: source.id, reference: cleanName(reference), kind, path: source.path, severity: 'low', status: 'review', reason: 'FortiGate SD-WAN logical interface; verify that the target configuration preserves the SD-WAN virtual interface and policy attachment.' });
+        continue;
+      }
+
+      const targets = (lookup.get(normalise(reference)) ?? []).filter(target => target.id !== source.id && categoryKind(target.category) === kind);
+      if (targets.length) {
+        for (const target of targets) edges.push({ from: source.id, to: target.id, reference: cleanName(reference), kind: categoryKind(target.category) });
+      } else if (kind === 'address') {
+        // FortiGate firewall policy dstaddr can reference a VIP directly.
+        // Resolve an address first when one exists; otherwise fall back to a
+        // virtual IP before declaring the reference unresolved.
+        const addressCandidates = addressReferenceCandidates(nodes, reference);
+        if (addressCandidates.length) {
+          for (const target of addressCandidates) edges.push({ from: source.id, to: target.id, reference: cleanName(reference), kind: 'address' });
+        } else {
+          const vipCandidates = vipReferenceCandidates(nodes, reference);
+          if (vipCandidates.length) {
+            for (const target of vipCandidates) edges.push({ from: source.id, to: target.id, reference: cleanName(reference), kind: 'vip' });
+          } else {
+            unresolved.push(classifyAddressMiss(source, reference));
+          }
+        }
+      } else {
+        const severity = source.category === 'firewallPolicies' ? 'high' : kind === 'certificate' ? 'low' : 'medium';
+        unresolved.push({ from: source.id, reference: cleanName(reference), kind, path: source.path, severity, status: 'unresolved', reason: `Referenced ${kind} object was not found in the expected source inventory category.` });
+      }
+    }
+  }
+
+  const inbound = new Set(edges.map(edge => edge.to));
+  const orphans = nodes.filter(node => orphanCategories.has(node.category) && !inbound.has(node.id));
+  const orphanDiagnostics = orphans.map(classifyOrphan);
+  const disabledReferenced = nodes.filter(node => !node.enabled && inbound.has(node.id));
+  return { nodes, edges, unresolved, reviews, orphans, orphanDiagnostics, disabledReferenced };
 }
 
 export function dependencySummary(graph: DependencyGraph) {
-  const inbound = new Set(graph.edges.map(edge => edge.to));
-  const outbound = new Set(graph.edges.map(edge => edge.from));
-  return { nodes: graph.nodes.length, edges: graph.edges.length, unresolved: graph.unresolved.length, referencedObjects: inbound.size, consumers: outbound.size };
+  return {
+    nodes: graph.nodes.length,
+    edges: graph.edges.length,
+    unresolved: graph.unresolved.length,
+    reviews: graph.reviews.length,
+    orphans: graph.orphans.length,
+    disabledReferenced: graph.disabledReferenced.length,
+    referencedObjects: new Set(graph.edges.map(edge => edge.to)).size,
+    consumers: new Set(graph.edges.map(edge => edge.from)).size,
+  };
+}
+
+export function dependencyBreakdown(graph: DependencyGraph) {
+  const kinds: DependencyKind[] = ['interface', 'address', 'service', 'security-profile', 'vip', 'ippool', 'vpn', 'route', 'sdwan', 'authentication', 'certificate', 'unknown'];
+  const unresolvedByKind = Object.fromEntries(kinds.map(kind => [kind, graph.unresolved.filter(issue => issue.kind === kind).length]));
+  const orphanByCategory = Object.fromEntries([...new Set(graph.orphans.map(node => node.category))].sort().map(category => [category, graph.orphans.filter(node => node.category === category).length]));
+  const orphanByClassification = Object.fromEntries((['cleanup-candidate', 'potentially-unused', 'security-profile-review', 'identity-system-review'] as const).map(classification => [classification, graph.orphanDiagnostics.filter(item => item.classification === classification).length]));
+  const unresolvedBySeverity = Object.fromEntries((['high', 'medium', 'low'] as const).map(severity => [severity, graph.unresolved.filter(issue => issue.severity === severity).length]));
+  const reviewByKind = Object.fromEntries(kinds.map(kind => [kind, graph.reviews.filter(issue => issue.kind === kind).length]));
+  return { unresolvedByKind, unresolvedBySeverity, reviewByKind, orphanByCategory, orphanByClassification };
 }
