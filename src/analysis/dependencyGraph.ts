@@ -2,10 +2,12 @@ import type { ConfigurationInventory, InventoryItem } from './configInventory';
 
 export type DependencyKind = 'interface' | 'address' | 'service' | 'security-profile' | 'vip' | 'ippool' | 'vpn' | 'route' | 'sdwan' | 'authentication' | 'certificate' | 'unknown';
 export type DependencyStatus = 'unresolved' | 'review';
+export type OrphanClassification = 'cleanup-candidate' | 'potentially-unused' | 'security-profile-review' | 'identity-system-review';
 export interface DependencyNode { id: string; name: string; category: string; path: string; references: string[]; enabled: boolean; }
 export interface DependencyEdge { from: string; to: string; reference: string; kind: DependencyKind; }
 export interface DependencyIssue { from: string; reference: string; kind: DependencyKind; path: string; severity: 'high' | 'medium' | 'low'; status: DependencyStatus; reason: string; }
-export interface DependencyGraph { nodes: DependencyNode[]; edges: DependencyEdge[]; unresolved: DependencyIssue[]; reviews: DependencyIssue[]; orphans: DependencyNode[]; disabledReferenced: DependencyNode[]; }
+export interface OrphanDiagnostic { nodeId: string; name: string; category: string; path: string; classification: OrphanClassification; confidence: 'high' | 'medium' | 'low'; reason: string; }
+export interface DependencyGraph { nodes: DependencyNode[]; edges: DependencyEdge[]; unresolved: DependencyIssue[]; reviews: DependencyIssue[]; orphans: DependencyNode[]; orphanDiagnostics: OrphanDiagnostic[]; disabledReferenced: DependencyNode[]; }
 
 const categoryKind = (category: string): DependencyKind => {
   if (category === 'interfaces') return 'interface';
@@ -131,6 +133,51 @@ function classifyAddressMiss(source: DependencyNode, reference: string): Depende
   };
 }
 
+function classifyOrphan(node: DependencyNode): OrphanDiagnostic {
+  if (!node.enabled) {
+    return {
+      nodeId: node.id,
+      name: node.name,
+      category: node.category,
+      path: node.path,
+      classification: 'cleanup-candidate',
+      confidence: 'high',
+      reason: 'The object is disabled and has no inbound dependency edge. Confirm it is intentionally retired before removing it from the migration set.',
+    };
+  }
+  if (node.category === 'securityProfiles') {
+    return {
+      nodeId: node.id,
+      name: node.name,
+      category: node.category,
+      path: node.path,
+      classification: 'security-profile-review',
+      confidence: 'medium',
+      reason: 'No modeled consumer was found. Security profiles can have implicit or configuration-specific usage, so do not remove without checking the source appliance.',
+    };
+  }
+  if (node.category === 'userGroups' || node.category === 'authenticationServers' || node.category === 'certificates' || node.category === 'localUsers') {
+    return {
+      nodeId: node.id,
+      name: node.name,
+      category: node.category,
+      path: node.path,
+      classification: 'identity-system-review',
+      confidence: 'low',
+      reason: 'No modeled consumer was found. Identity, authentication, and certificate objects may be consumed implicitly or by configuration contexts not yet modeled by the dependency rules.',
+    };
+  }
+  return {
+    nodeId: node.id,
+    name: node.name,
+    category: node.category,
+    path: node.path,
+    classification: 'potentially-unused',
+    confidence: 'medium',
+    reason: 'No modeled inbound dependency edge was found. Treat this as a review candidate, not proof that the object is unused.',
+  };
+}
+
 export function buildDependencyGraph(inventory: ConfigurationInventory): DependencyGraph {
   const entries = allItems(inventory);
   const nodes: DependencyNode[] = entries.map(({ category, item }, index) => ({
@@ -185,8 +232,9 @@ export function buildDependencyGraph(inventory: ConfigurationInventory): Depende
 
   const inbound = new Set(edges.map(edge => edge.to));
   const orphans = nodes.filter(node => orphanCategories.has(node.category) && !inbound.has(node.id));
+  const orphanDiagnostics = orphans.map(classifyOrphan);
   const disabledReferenced = nodes.filter(node => !node.enabled && inbound.has(node.id));
-  return { nodes, edges, unresolved, reviews, orphans, disabledReferenced };
+  return { nodes, edges, unresolved, reviews, orphans, orphanDiagnostics, disabledReferenced };
 }
 
 export function dependencySummary(graph: DependencyGraph) {
@@ -206,7 +254,8 @@ export function dependencyBreakdown(graph: DependencyGraph) {
   const kinds: DependencyKind[] = ['interface', 'address', 'service', 'security-profile', 'vip', 'ippool', 'vpn', 'route', 'sdwan', 'authentication', 'certificate', 'unknown'];
   const unresolvedByKind = Object.fromEntries(kinds.map(kind => [kind, graph.unresolved.filter(issue => issue.kind === kind).length]));
   const orphanByCategory = Object.fromEntries([...new Set(graph.orphans.map(node => node.category))].sort().map(category => [category, graph.orphans.filter(node => node.category === category).length]));
+  const orphanByClassification = Object.fromEntries((['cleanup-candidate', 'potentially-unused', 'security-profile-review', 'identity-system-review'] as const).map(classification => [classification, graph.orphanDiagnostics.filter(item => item.classification === classification).length]));
   const unresolvedBySeverity = Object.fromEntries((['high', 'medium', 'low'] as const).map(severity => [severity, graph.unresolved.filter(issue => issue.severity === severity).length]));
   const reviewByKind = Object.fromEntries(kinds.map(kind => [kind, graph.reviews.filter(issue => issue.kind === kind).length]));
-  return { unresolvedByKind, unresolvedBySeverity, reviewByKind, orphanByCategory };
+  return { unresolvedByKind, unresolvedBySeverity, reviewByKind, orphanByCategory, orphanByClassification };
 }
