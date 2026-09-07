@@ -1,23 +1,23 @@
-name: Deploy FortiAlign Batch 7
+name: Deploy FortiAlign
 
 on:
   push:
     branches:
-      - feat/fortialign-v2-batch7
+      - main
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: fortialign-batch7-pages
+  group: fortialign-pages
   cancel-in-progress: true
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Batch 7
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -44,4 +44,4 @@ jobs:
           publish_branch: gh-pages
           publish_dir: ./dist
           force_orphan: false
-          commit_message: "Deploy FortiAlign Batch 7 ${{ github.sha }}"
+          commit_message: "Deploy FortiAlign ${{ github.sha }}"
